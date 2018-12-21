@@ -1,0 +1,766 @@
+#------------------------------------------------------------------------------
+# Globals
+#------------------------------------------------------------------------------
+
+$debug = true
+
+CharSettings['whitelist']      = [] if CharSettings['whitelist'].nil?
+CharSettings['combine_pearls'] = false if CharSetting['combine_pearls'].nil?
+CharSettings['full_jars']      = nil if CharSetting['full_jars'].nil?
+
+whitelist = CharSettings['whitelist']
+
+#------------------------------------------------------------------------------
+#  Classes
+#------------------------------------------------------------------------------
+
+class Param_parser
+  VALID_COMMANDS     = ["add","remove","help","full-jars","sort-fulls","combine-pearls"]
+
+  attr_reader :state
+
+  def initialize(params, script_name)
+    @params       = params[0]
+    @param_values = []
+    @sn           = script_name
+    @state        = nil
+
+    process_params(@params)
+  end
+
+  def process_params(param)
+    @param_values
+
+    pat_param = /(?<param>([a-zA-Z-])+(?=\=)  # all word chars with hyphen
+                                              # followed by an '='
+                                              # e.g., num-add=, or something=
+                 |(?<=^|\s)(help)(?=\s|$))=?  # or match the word 'help'
+    /x
+
+    pat_value = /(?<value>([a-zA-Z0-9\'\-]+   # grab all word or number chars
+                 (\s(?!help                   # ignore help as a value OR
+                 |([a-zA-Z-]+\=               # ignore params as values OR
+                 |$)))?)+)?                   # ignore last character spaces
+    /x
+
+    pattern   = /#{pat_param}#{pat_value}/
+
+    # group the matches in an array
+    results = param.scan(pattern)
+
+    help_found = false
+
+    if results.any?
+      results.each {|result|
+        row = {}
+
+        if VALID_COMMANDS.include? result[0]
+
+          case result[0]
+
+            when "add"
+
+            result[1] = result[1].sub(/\s+$/, "")
+
+              if !CharSettings['whitelist'].include? result[1]
+                echo "Adding #{result[1]} to whitelist."
+                CharSettings['whitelist'] << result[1]
+              end
+
+            when "remove"
+
+              if CharSettings['whitelist'].include? result[1]
+                echo "Removing #{result[1]} from whitelist."
+                CharSettings['whitelist'].delete(result[1])
+              end
+
+            when "full-jars"
+
+              matched_bag = GameObj.inv.find{|container| %/#{result[1]}/ === "#{container.noun}"}
+
+              if matched_bag
+                echo "Setting your default full jar container to /#{result[1]}/"
+                CharSettings['full_jars'] = result[1]
+              else
+                echo "You must match the container NOUN, you put: #{result[1]}"
+              end
+
+            when "combine-pearls"
+
+              if /(true|false)/ =~ result[1]
+                CharSettings['combine_pearls'] = result[1]
+                echo "Combining pearls, set to: #{result[1]}"
+              else
+                echo "INVALID PARAMETER: You must use either 'true' or 'false'."
+              end
+
+            when "help"
+
+              help_found = true
+
+          end
+        else
+          echo "Invalid command: #{result[0]}"
+      end
+      }
+
+      if help_found
+        get_help
+      end
+
+    end
+
+    if !results.any?
+      @state = "run"
+    end
+
+  end
+
+  def get_help
+    @help_menu = []
+    @help_menu << "                                                            "
+    @help_menu << "Usage:                                                      "
+    @help_menu << " Supports multiple arguments not in any order               "
+    @help_menu << " Uses whitelist to begin storing items in jars              "
+    @help_menu << "  \;#{@sn} add=<[gem | reagent]name>                        "
+    @help_menu << "  \;#{@sn} remove=<[gem | reagent]name>                     "
+    @help_menu << "  \;#{@sn} sort_fulls=true|false                            "
+    @help_menu << "  \;#{@sn} combine-pearls=true|false                        "
+    @help_menu << "  \;#{@sn} full-jars=container                              "
+    @help_menu << "  \;#{@sn} help                                             "
+    @help_menu << "                                                            "
+    @help_menu << "Vars:                                                       "
+    @help_menu << "  Whitelist       : #{CharSettings['whitelist']}            "
+    @help_menu << "  Full jar bag    : #{CharSettings['full_jars']}            "
+    @help_menu << "  Combine pearls? : #{CharSettings['combine_pearls']}       "
+    @help_menu << "                                                            "
+    @help_menu.each do |item|
+      respond "#{item}"
+    end
+
+  end
+
+  def output_message(message, valid=nil)
+    respond "#---------------------------------------------------------------#"
+    respond "# #{message} ... #{valid}"
+    respond "#---------------------------------------------------------------#"
+  end
+
+  private :process_params, :get_help
+end
+
+#------------------------------------------------------------------------------
+# Jar processing facility, normalizes all whitelisted items and jars in
+# inventory then fills all partially filled jars of that type then moves
+# to empties
+
+class JarHoarder
+
+  attr_reader :jars, :wants_stored
+
+  def initialize(whitelist, script_name)
+    @jars         = {}
+    @whitelist    = whitelist
+    @wants_stored = {}
+    @scrip_name   = script_name
+    @in_hand_hash = {}
+
+    #set_jar_inventory
+  end
+
+  def downstream_hook(stop_match, command, hook_name)
+    # begin a downstream hook until the regex value matches the line you want to
+    # stop on. Ensure that you know the underlying XML pattern to match or the
+    # hook will remain active
+
+    job_complete = false
+    count = 0
+    DownstreamHook.add(hook_name, Proc.new do |line|
+
+      if line =~ stop_match
+
+        DownstreamHook.remove(hook_name)
+        echo "Removing hook"
+        echo count
+        job_complete = true
+
+      end
+      count += 1
+      nil
+    end)
+
+    put command
+    wait_until{job_complete}
+
+  end
+
+  def clear_hands
+    # put away anything that may be in your hands from global define container
+    @in_hand_hash = {}  # hash table for items stored
+
+    #----------------------------------------------------------------------------
+    # check for sonic weapons
+
+    if Spell[1012].active?
+      put "stop 1012"
+    end
+
+    if Spell[1009].active?
+      put "stop 1009"
+    end
+
+    #----------------------------------------------------------------------------
+    # check for physical items
+
+    if GameObj.right_hand.id
+      @in_hand_hash.store(:right_hand, GameObj.right_hand.id)
+      empty_right_hand
+    end
+
+    if GameObj.left_hand.id
+      @in_hand_hash.store(:left_hand, GameObj.left_hand.id)
+      empty_left_hand
+    end
+  end
+
+  def named_capture_line(text_line, regex_hash)
+    @hash_match = {}
+
+    regex_hash.each_pair do |key, value|
+      #------------------------------------------------------------------------
+      # Recursive search through regex table.
+      # if a match occurs in regex hash table, set match TRUE--stop checking
+
+      if text_line =~ value
+        # match was found
+        @the_match     = value.match text_line # collect the match symbols
+        @match_values  = @the_match.captures   # extract values, symbol table
+
+        @named_regex   = value.named_captures  # named regex definitions
+        @reg_captures  = @named_regex.count    # count number of named fields
+
+        while @reg_captures > 0
+          #------------------------------------------------------------------
+          # builds the hash table to return with captured values and keys
+          @hash_key                     = @named_regex.keys[(@reg_captures - 1)]
+          @hash_value                   = @match_values[(@reg_captures - 1)]
+          @hash_match[@hash_key.to_sym] = @hash_value
+
+          @reg_captures -= 1
+        end
+
+        echo "MATCH OUTPUT HASH: #{@hash_match}" if $debug == true
+
+        return @hash_match
+      end
+    end # end each p
+
+    return nil
+  end
+
+  def run_command(command, match_hash)
+    # runs a command, takes input hashtable of named regex, and returns
+    # a single hash of the match and capture values
+
+    @match_found = false                        # starts with no match
+
+    @roundtime   = /(^\.\.\.wait\s(?<time>\d+)\sseconds\.$)|(^Wait\s(?<time>\d+)\sseconds.$)/
+
+    fput "#{command}"                           # function input parameter
+
+    echo "COMMAND ISSUED: #{command}" if $debug == true
+    #--------------------------------------------------------------------------
+    # keep checking each line on console
+
+    while (!@match_found)
+
+      @read_line = get                           # read console line
+
+      if @read_line =~ @roundtime
+        echo ">>>> Repeat command! FPUT Failed, again!" if $debug == true
+
+        @rt_match  = @roundtime.match @read_line
+        @cap_array = @rt_match.captures          # capture time, first named cap
+        pause @cap_array[0].to_i                # pause in seconds
+
+        fput "#{command}"                      # re-run command
+      end
+
+
+      @result = named_capture_line(@read_line, match_hash)
+
+      if @result != nil
+        @match_found = true
+      else
+        echo "NO MATCH: #{self} #{match_hash}" if $debug == true
+      end
+
+    end # end loop
+
+    return @result
+  end
+
+  def set_wants_stored(whitelist)
+    @jars            = {}
+    @wants_stored    = {}
+
+    inventory_hashes = []
+    inventory_jars   = []
+
+    start_inv   = %/You are currently wearing and carrying/ # start of boxes
+    end_inv     = %/displayed.)/                            # end of boxes
+
+    container   = /.*displayed.\).*/
+
+    format      = [
+        /\s{6}(a|an)\s<a\sexist=(?:'|")(?<id>.*?)(?:'|")\s/,
+        /noun=(?:'|")(?<noun>.*?)(?:'|")>(?<name>.*?)\<\/a\>(\scontaining\s(?<item>.*)?|)/
+    ]
+
+    storage     = /#{format[0]}#{format[1]}/ # connect the format regex
+
+    #--------------------------------------------------------------------------
+    # Turn on xml
+
+    Script.current.want_downstream_xml = true    # start reading raw xml
+
+    put "inv full"
+
+    #-----------------------------------------------------------------------------
+    # look at each line of xml stream and match on boxes only
+
+    while line = get                       # one line of console text
+
+      inv_start        = true if line.include?(start_inv)
+      wants_hash       = {}                       # reset hash each line
+
+      if inv_start == true
+
+        #-------------------------------------------------------------------------
+        # start processing lines
+
+        if line =~ storage
+
+          values = (storage.match line).captures    # grab just named capures
+
+          wants_hash[:id]   = values[0]              # first value  : item id
+          wants_hash[:noun] = values[1]              # second value : noun
+          wants_hash[:name] = values[2]              # thirst value : name
+
+          inventory_hashes.push(wants_hash)          # add this hash to the array
+
+          if wants_hash[:noun] =~ /^(?:jar|bottle|beaker)$/
+            wants_hash[:contains] = values[3]
+            inventory_jars.push(wants_hash)
+          end
+
+        end
+      end
+
+      # done looking at boxes
+      break if line.include?(end_inv)
+    end # loop close
+
+    # if flag set combine differentiating sizes in one jar
+    if CharSettings['combine_pearls']
+
+      chomp_pattern = /^(large\s|medium\s|small\s)\w+\spearl/
+
+      inventory_hashes.each {|hash|
+
+        if chomp_pattern  =~ hash[:name]
+          hash[:name] = hash[:name].sub(/^(large\s|medium\s|small\s)/,"")
+          echo hash
+
+        end
+
+      }
+
+      count = 0
+
+      whitelist.each{|item|
+
+        if chomp_pattern =~ item
+          whitelist[count] = item.sub(/^(large\s|medium\s|small\s)/,"")
+        end
+
+        count += 1
+      }
+
+      inventory_jars.each {|hash|
+
+        if chomp_pattern  =~ hash[:contains]
+          hash[:contains] = hash[:contains].sub(/^(large\s|medium\s|small\s|tiny\s)/,"")
+          echo hash
+
+        end
+      }
+    end
+
+    # map all the gems that are whitelisted and in inventory
+    inventory_hashes.each {|hash|
+
+      if whitelist.include? hash[:name]
+        if @wants_stored.key?(hash[:name])
+          @wants_stored[hash[:name]] << hash
+        else
+          @wants_stored[hash[:name]] = []
+          @wants_stored[hash[:name]] << hash
+        end
+      end
+
+    }
+
+    # map all the jars that are in inventory
+    inventory_jars.each {|jar|
+
+        if jar[:contains] == nil
+          if @jars["empty"]               # if previous empties, add the next
+            @jars["empty"] << jar
+          else                            # no empty hash, make it
+            @jars["empty"] = []
+            @jars["empty"] << jar
+          end
+
+        else # non empty jars
+
+          if @jars[jar[:contains]]        # if key of jar, add another jar
+            @jars[jar[:contains]] << jar
+          else                            # no key, make it
+            @jars[jar[:contains]] = []
+            @jars[jar[:contains]] << jar
+          end
+        end
+    }
+
+    Script.current.want_downstream_xml = false
+  end
+
+  def process_wants(items_to_store = @wants_stored, jars_hashes = @jars)
+    #You add an uncut emerald to the contents
+
+    get_jar = {
+      :got_it       => /^You\sremove\s(?:a|an)\s(?<contents>[a-zA-Z\-\s]+)\scontaining/,
+      :full_hands   => /(?<hands_full>^You need a free hand)/,
+      :missing      => /(?<missing>^I could not find what you referring to.)/,
+      :empty        => /^You\sremove\s(?:a|an)\s(?<empty>[a-zA-Z\-\s]+)\sfrom in your/
+    }
+
+    get_item = {
+      :got_it       => /^You\sremove\s(?:a|an)\s(?<item>[a-zA-Z\-\'\s]+)from/
+    }
+
+    stow_item = {
+      :stowed       => /^You\sput\s(?:a|an)\s(?<stowed>[a-zA-Z\-\s\']+)in your/,
+    }
+
+    fill_jar = {
+      :full         => /^The\s(?<full>[a-zA-Z\-\'\s]+)is full!/,
+      :filled       => /^You\sadd\s(?:a|an)\s[a-zA-Z\-\'\s]+\,\s(?<filled>filling\sit\.)/,
+      :filling      => /^You\sadd\s(?:a|an)\s(?<filling>[a-zA-Z\-\'\s]+)to\sthe\scontents\sof\s[a-zA-Z\-\s]+\./,
+      :empty        => /^You\sput\syour\s(?<filling>[a-zA-Z\s\'\-]+)\sinto\syour/,
+      :not_held     => /^(?<not_held>You are not holding the jar.)/,
+      :recharge     => /^(?<rechargable>[a-zA-Z\'\-\s]+)\sdoes\snot\s[a-z\s]+suitable/
+    }
+
+    #--------------------------------------------------------------------------
+    #  Go through each items hash and store all list items
+
+    for item_hash in items_to_store
+
+      #------------------------------------------------------------------------
+      # Items vars
+
+      item_name  = item_hash[0]
+      item_count = item_hash[1].size
+      item_list  = item_hash[1]
+
+      partial_jars_to_process = false
+      empty_jars_process      = false
+      items_to_process        = true
+
+      #------------------------------------------------------------------------
+      # process one item list at a time, quit script unless set to auto-buy
+
+      item_in_hand = false
+      jar_in_hand  = false
+
+      while items_to_process
+
+        echo "Item: #{item_name} count: #{item_count}" if $debug == true
+
+        #----------------------------------------------------------------------
+        #  Search for a matching...move to empty jars if none found
+
+        for jar_hash in jars_hashes
+          jar_name = jar_hash[0]
+          jar_list = jar_hash[1]
+          echo "item name: #{item_name} jar name: #{jar_name}" if $debug = true
+
+          if /ruby/ =~ item_name
+            echo "FEKING HELL FOUND A PLURAL BABY"
+
+            item_name = item_name.sub(/ruby/, "rubies")
+            echo item_name
+          end
+
+          if /tooth/ =~ item_name
+            echo "FEKING HELL FOUND A PLURAL BABY"
+
+            item_name = item_name.sub(/tooth/, "teeth")
+            echo item_name
+          end
+
+          if /^#{item_name}/ =~ jar_name
+
+              partial_jars_to_process = jar_list
+              echo "Partials to process #{partial_jars_to_process}"
+              break
+          end
+
+        end # end find matching jars list
+
+        #----------------------------------------------------------------------
+        #  Try filling all jars of the same type first
+
+        while partial_jars_to_process && items_to_process
+
+          if item_list.any? && jar_list.any?
+
+            if !item_in_hand
+              current_item         = item_list[0]
+              item_result = run_command("get ##{current_item[:id]}", get_item)
+              item_in_hand = true
+            end
+
+
+            for jar in jar_list
+
+              echo "entering partial jar in jars to process: #{jar[:id]}" if $debug == true
+
+              if !jar_in_hand
+                jar_result = run_command("get ##{jar[:id]}", get_jar)
+              end
+
+              echo "CURRENT JAR LIST: #{jar_list}" if $debug == true
+              store_result = run_command("put ##{current_item[:id]} in ##{jar[:id]}", fill_jar)
+
+              if store_result.keys == [:filling]
+                item_in_hand = false
+                echo "Pushed item: #{current_item[:name]} into jar: #{jar[:contains]}" if $debug == true
+                item_list.delete(current_item)
+
+                jar_in_hand = true
+                echo "go get another item" if $debug == true
+                break
+              end
+
+              if store_result.keys == [:filled]
+                item_in_hand = false
+                run_command("stow ##{jar[:id]}", stow_item)
+                jar_in_hand = false
+                jar_list.delete(jar)
+                item_list.delete(current_item)
+                echo "Jars left: #{jar_list}" if $debug == true
+                break
+
+              end
+
+              if store_result.keys == [:full]
+                item_in_hand = true
+                run_command("stow ##{jar[:id]}", stow_item)
+                jar_in_hand = false
+                jar_list.delete(jar)
+                echo "Jars left: #{jar_list}" if $debug == true
+                break
+              end
+
+              if store_result.keys == [:rechargable]
+                run_command("stow ##{current_item[:id]}", stow_item)
+                item_list.delete(current_item)
+                item_in_hand = false
+                jar_in_hand = true
+                break
+              end
+
+              partial_jars_to_process = false
+
+              if jar_in_hand
+                run_command("stow ##{jar[:id]}", stow_item)
+              end
+
+            end # end of for loop
+
+          else # if either jars used up or items all put away
+
+            if !item_list.any?
+                items_to_process = false
+                echo "used up all items" if $debug == true
+            end
+
+            if !jar_list.any?
+                partial_jars_to_process = false
+
+                echo "ran out of jars" if $debug == true
+            end
+
+            if jar_in_hand
+              run_command("stow ##{jar[:id]}", stow_item)
+            end
+
+          end # end if items or jars
+        end # end partials and items while loop
+
+        #----------------------------------------------------------------------
+        # If items not done and no partials check for empties
+
+        if !partial_jars_to_process && items_to_process
+
+          for jar_hash in jars_hashes
+            jar_name = jar_hash[0]
+            jar_list = jar_hash[1]
+
+            if jar_name == "empty"
+              empty_jars_process = jar_list
+              echo "Found empties" if $debug == true
+              break
+            else
+              empty_jars_process = false
+            end
+
+
+          end # end find matching jars list
+
+          #----------------------------------------------------------------------
+          #  Try filling all jars of the same type first
+
+          while empty_jars_process && items_to_process
+
+            if item_list.any? && jar_list.any?
+
+              if !item_in_hand
+                current_item         = item_list[0]
+                item_result = run_command("get ##{current_item[:id]}", get_item)
+                item_in_hand = true
+              end
+
+              for jar in jar_list
+                echo "jar list: #{jar_list}" if $debug == true
+                echo "entering jar in jars to process: #{jar[:id]}" if $debug == true
+
+                if !jar_in_hand
+                  jar_result = run_command("get ##{jar[:id]}", get_jar)
+                end
+
+                #--------------------------------------------------------------
+                #  Run the command to put item in jar and check all
+                #  possibilities
+
+                store_result = run_command("put ##{current_item[:id]} in ##{jar[:id]}", fill_jar)
+
+                if store_result.keys == [:filling]
+                  item_in_hand = false
+                  item_list.delete(current_item)
+
+                  # check if you finished putting away all of same type
+                  if !item_list.any?
+                    jar_list.delete(jar)
+                    run_command("stow ##{jar[:id]}", stow_item)
+                    jar_in_hand = false
+                    break
+                  else
+                    jar_in_hand = true
+                    echo "go get another item" if $debug == true
+                    break
+                  end
+
+                end
+
+                # the jar is filled up, move to the next
+                if store_result.keys == [:filled]
+                  item_in_hand = false
+
+                  run_command("stow ##{jar[:id]}", stow_item)
+
+                  jar_in_hand = false
+                  jar_list.delete(jar)
+                  break
+
+                end
+
+                # check if the jar you have is full, should never be a case
+                if store_result.keys == [:full]
+                  item_in_hand = true
+                  item_list.delete(current_item)
+
+                  run_command("stow ##{jar[:id]}", stow_item)
+
+                  jar_in_hand = false
+                  jar_list.delete(jar)
+                  next
+                end
+
+                if store_result.keys == [:rechargable]
+                  run_command("stow ##{current_item[:id]}", stow_item)
+                  item_in_hand = false
+                  item_list.delete(current_item)
+                  jar_in_hand = true
+                  next
+                end
+
+                #--------------------------------------------------------------
+                # fail safe set jars left to false
+                empty_jars_process = false
+
+                if jar_in_hand
+                  run_command("stow ##{jar[:id]}", stow_item)
+                end
+
+              end # end of for loop
+
+            else # if either jars used up or items all put away
+
+              if !item_list.any?
+                items_to_process = false
+                echo "used up all items" if $debug == true
+
+              end
+
+              if !jar_list.any?
+                empty_jars_process = false
+                jars_hashes.delete("empty")
+                echo "ran out of jars" if $debug == true
+
+              end
+
+              if jar_in_hand
+                run_command("stow ##{jar[:id]}", stow_item)
+              end
+
+              if item_in_hand
+                run_command("stow ##{current_item[:id]}", stow_item)
+              end
+
+            end # end if items or jars
+          end # end partials and items while loop
+
+        end # end if to check for empties
+
+        break
+      end # end current item list processing while loop
+
+
+    end # end main item hash lists for loop
+  end
+
+end
+
+params      = Param_parser.new(script.vars, script.name)
+
+if params.state == "run"
+
+  jar_handler = JarHoarder.new(whitelist, script.name)
+  jar_handler.set_wants_stored(whitelist)
+
+  jar_handler.process_wants
+end
