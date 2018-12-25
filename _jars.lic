@@ -1,20 +1,240 @@
 #------------------------------------------------------------------------------
+# AUTHOR           : Xeldrake the sorcerer (aka: Nips the wizard)
+# CREATED DATE     : 20 DEC 2018
+# PROGRAM NAME     : xjars.lic
+# PURPOSE          : Take a whitelist of item, either gems or reagents
+#                    and store them into jars.
+#
+# FEATURES         : Uses partial jars prior to filling empties
+#                  : Combine varying pearl sizing in one jar
+#                  : Stashing full jars in desired containers
+#
+# REVISION HISTORY :
+#
+# DATE:     AUTHOR:         REF:        REVISION (DATE IN YYYYMMDD FORMAT)
+# 20181223  Xeldrake        v1.0        (Alpha)
+#------------------------------------------------------------------------------
+
+#------------------------------------------------------------------------------
+# TODOs
+#------------------------------------------------------------------------------
+
+# TODO comma separate add= param and remove recurrences
+# TODO add buying option for empties
+# TODO get the downstream hook working for 'inv full'
+# TODO implement "list" parameter
+
+#------------------------------------------------------------------------------
 # Globals
 #------------------------------------------------------------------------------
 
 $debug = true
 
-CharSettings['whitelist']      = [] if CharSettings['whitelist'].nil?
-CharSettings['combine_pearls'] = false if CharSetting['combine_pearls'].nil?
-CharSettings['full_jars']      = nil if CharSetting['full_jars'].nil?
+#------------------------------------------------------------------------------
+# Per character settings
+#------------------------------------------------------------------------------
 
-whitelist = CharSettings['whitelist']
+CharSettings['whitelist']      = []     if CharSettings['whitelist'].nil?
+CharSettings['combine_pearls'] = false  if CharSetting['combine_pearls'].nil?
+CharSettings['full_jars']      = nil    if CharSetting['full_jars'].nil?
+
+whitelist = CharSettings['whitelist'].dup
+
+#------------------------------------------------------------------------------
+#  Modules
+#------------------------------------------------------------------------------
+
+module Jarrables
+
+  def set_jarable_gems
+    @jarable_gems = /
+      (:?swirling\saetherstone|banded\sagate|blue\slace\sagate|chameleon\sagate
+      |cloud\sagate|fire\sagate|frost\sagate|moss\sagate|mottled\sagate|tigereye\sagate
+      |droplet\sof\shoney\samber|piece\sof\sgolden\samber|teardrop\sof\sgreen\samber
+      |polished\sdark\sblue\samber|deep\spurple\samethyst|shadow\samethyst
+      |brilliant\swyrm's-tooth\samethyst|smoky\samethyst|shifting\smultihued\sauboraline
+      |piece\sof\sazurite|spar\sof\spocked\sazurite|Kezmonihoney\sberyl
+      |formation\sof\srainbowed\sbismuth|azure\sblazestar|crimson\sblazestar
+      |emerald\sblazestar|golden\sblazestar|selanthbloodjewel|dark\sred-green\sbloodstone
+      |bright\sbluerock|deep\sred\scarbuncle|chunk\sof\ssand-smoothed\schalcedony
+      |piece\sof\sgrey\schalcedony|piece\sof\swhite\schalcedony
+      |radiant\sgreen\scinderstone|piece\sof\sblue\sridge\scoral|polished\sblack\scoral
+      |polished\sblue\scoral|polished\spink\scoral|polished\sred\scoral|blue\scordierite
+      |piece\sof\scorestone|cinnabar\scrystal|dull\sgrey\scrystal|glaesine\scrystal
+      |pink\ssalt\scrystal|quartz\scrystal|rock\scrystal|shard\sof\sdragonmist\scrystal
+      |shard\sof\stigerfang\scrystal|tangerine\swulfenite\scrystal|chalky\syellow\scube
+      |black\sdeathstone|scarlet\sdespanal|blue\sdiamond|dragon's-tear\sdiamond
+      |dwarf-cut\sdiamond|faceted\sblack\sdiamond|large\syellow\sdiamond|uncut\sdiamond
+      |uncut\smaernstrike\sdiamond|uncut\sstar-of-Tamzyrr\sdiamond
+      |white-point\sstar\sdiamond|star\sdiopside|glossy\sblack\sdoomstone
+      |black\sdreamstone|blue\sdreamstone|green\sdreamstone|pink\sdreamstone
+      |red\sdreamstone|yellow\sdreamstone|white\sdreamstone|dram\sof\sgold\sdust
+      |handful\sof\sgold\sdust|pinch\sof\sgold\sdust|petrified\saivren\segg
+      |dragonfire\semerald|dragon's-tear\semerald|dwarf-cut\semerald|uncut\semerald
+      |star\semerald|Eye-of-Koar\semerald|deep\sblue\seostone|milky\squartz\seye|obsidieye
+      |olivine\sfaenor-bloom|bronze\sfang|copper\sfang|gold\sfang|iron\sfang|mithril\sfang
+      |platinum\sfang|silver\sfang|steel\sfang|urglaes\sfang|cube\sof\schalky\sfeldspar
+      |bright\sviolet\sfeystone|periwinkle\sfeystone|firestone|piece\sof\sstriated\sfluorite
+      |silvery\sgalena|almandine\sgarnet|blood\sred\sgarnet|dark\spurple\ssunset\sgarnet
+      |green\sgarnet|orange\sspessartine\sgarnet|sanguine\swyrm's-eye\sgarnet|ametrine\sgem
+      |aquamarine\sgem|bright\schrysoberyl\sgem|clear\sblue\sgem|fiery\sred\sgem
+      |flawless\saquamarine\sgem|golden\sberyl\sgem|green\schrysoprase\sgem
+      |small\sgreen\sgeode|small\sblue\sgeode|small\sred\sgeode|small\spurple\sgeode
+      |brilliant\slilac\sglimaerstone|ceruleglimaerstone|clear\sglimaerstone
+      |golden\sglimaerstone|green\sglimaerstone|peach\sglimaerstone|smoky\sglimaerstone
+      |ultramarine\sglimaerstone|oblong\sblue\sgoldstone|rosette\sof\scrystalline\sgypsum
+      |shard\sof\scloudy\sgypsum|piece\sof\spetrified\shaon|pale\syellow\sheliodor
+      |orb\sof\smirrored\shematite|spar\sof\sdull\shematite|sphere\sof\sscratched\shematite
+      |yellow\shyacinth|blackish\sblue\sidocrase|piece\sof\spolished\sivory
+      |age-darkened\sivory\screscent|fiery\sjacinth|piece\sof\sbrown\sjade|piece\sof\sgreen\sjade
+      |piece\sof\swhite\sjade|piece\sof\syellow\sjade|cone\sof\sember\sjasper
+      |nodule\sof\speacock\sjasper|ovoid\sof\sleopard\sjasper|ovoid\sof\slunar\sjasper
+      |ovoid\sof\smonsoon\sjasper|pebble\sof\sorbicular\sjasper|piece\sof\sblack\sjasper
+      |piece\sof\sred\sjasper|piece\sof\syellow\sjasper|blue\slapis\slazuli
+      |piece\sof\spetrified\smaoral|piece\sof\sblack\smarble|piece\sof\sgreen\smarble
+      |piece\sof\spink\smarble|piece\sof\swhite\smarble|piece\sof\sblood\smarble
+      |nodule\sof\sshimmering\smarcasite|glossy\spale\sbeige\smekret|glossy\ssable\smekret
+      |large\spiece\sof\smica|chunk\sof\sdark\smica|blue\smoonstone|grey\smoonstone
+      |cats-eye\smoonstone|black\smoonstone|golden\smoonstone|opaline\smoonstone
+      |pale\sblue\smoonstone|pale\sgreen\smoonstone|silvery\smoonstone
+      |piece\sof\soblong\snephrite|gold\snugget|platinum\snugget|large\sgold\snugget
+      |large\splatinum\snugget|piece\sof\sjet\sblack\sobsidian|piece\sof\sspiderweb\sobsidian
+      |piece\sof\sbanded\sonyx|piece\sof\sblack\sonyx|aster\sopal|black\sopal
+      |blue\sgreen\slagoon\sopal|blue\ssky\sopal|boulder\sopal|cluster\sof\sfire\sopal
+      |dragonfire\sopal|fire\sopal|moonglae\sopal|white\sopal|blue-white\sfrost\sopal
+      |brilliant\spurple\sopal|purple\sblack\sthunderhead\sopal|green\sora-bloom
+      |black-cored\semerald\sorb|golden\sfiremote\sorb|murky\sshadowglass\sorb
+      |brilliant\sfire\spearl|iridescent\spearl|metallic\sblack\spearl|midnight\sblue\spearl
+      |tiny\sblack\spearl|tiny\sgrey\spearl|tiny\spink\spearl|tiny\swhite\spearl
+      |small\sblack\spearl|small\sgrey\spearl|small\spink\spearl|small\swhite\spearl
+      |medium\sblack\spearl|medium\sgrey\spearl|medium\spink\spearl|medium\swhite\spearl
+      |large\sblack\spearl|large\sgrey\spearl|large\spink\spearl|large\swhite\spearl
+      |pink\speridot|green\speridot|blue\speridot|hunk\sof\shole-ridden\spumice
+      |pyrite|piece\sof\sblue\squartz|cluster\sof\sirregular\sblue\squartz
+      |piece\sof\scarneliquartz|piece\sof\scat's\seye\squartz|piece\sof\scitrine\squartz
+      |piece\sof\srose\squartz|quartz\scrystal|shard\sof\srainbow\squartz
+      |tangerine\squartz|asterfire\squartz|dragonfire\squartz|dragon's-fang\squartz
+      |leopard\squartz|shard\sof\soblivion\squartz|golden\srhimar-bloom
+      |blue\sstar-shaped\sriftshard|faceted\smidnight\sblue\sriftstone|pale\sviolet\sriftstone
+      |piece\sof\sblack\sriftstone|Alhan'aht\srivertear|square\sof\sshale\srock
+      |cluster\sof\sorange\sroestone|cluster\sof\sred\sroestone|piece\sof\srosespar
+      |dragon's-tear\sruby|dwarf-cut\sruby|faceted\sblood\sred\ssandruby
+      |impure\sblood\sred\sruby|star\sruby|uncut\sruby|sylvarraend\sruby
+      |jewel-toned\sdragonfly\ssaewehna|bright\sorange\sbutterfly\ssaewehna
+      |iridescent\sazure\sbutterfly\ssaewehna|pale\sgold\sfirefly\ssaewehna
+      |silver\sfirefly\ssaewehna|vibrant\shummingbird\ssaewehna
+      |russet\sand\scream\smoth\ssaewehna|silvery\smint\sgreen\smoth\ssaewehna
+      |alabaster\ssandsilver|blue\ssapphire|blue\sshimmarglin\ssapphire
+      |clear\ssapphire|dragonsbreath\ssapphire|dragonseye\ssapphire
+      |deep\sblue\smermaid's-tear\ssapphire|dwarf-cut\ssapphire|green\ssapphire
+      |lavender\sshimmarglin\ssapphire|pale\smistvein\ssapphire|pale\soasis\ssapphire
+      |pale\swater\ssapphire|pink\ssapphire|star\ssapphire|violet\ssapphire
+      |yellow\ssapphire|umber\ssard|blood\sred\steardrop-etched\sscarab
+      |etched\stranslucent\sscarab\sscarab|glimmering\sopalescent\sscarab
+      |sea-green\sglaes\sscarab|sky-blue\sglaes\sscarab|spiked\sonyx\sscarab
+      |round\sdisk\sof\shazy\sred\sseglass|round\sdisk\sof\smist\sblue\sseglass
+      |round\sdisk\sof\samber\sseglass|round\sdisk\sof\sgreen\sseglass
+      |cloudy\salexandrite\sshard|shimmertine\sshard|swirled\slightning\sglass\sshard
+      |amethyst\sclam\sshell|angulate\swentletrap\sshell|beige\sclam\sshell
+      |black-spined\sconch\sshell|blue-banded\scoquinshell|bright\snoble\spectin\sshell
+      |blue\speriwinkle\sshell|candystick\stellin\sshell|checkered\schiton\sshell
+      |crown\sconch\sshell|crown-of-Charl\sshell|dovesnail\sshell|egg\scowrie\sshell
+      |fluted\slimpet\sshell|golden\scowrie\sshell|piece\sof\siridescent\smother-of-pearl
+      |large\schipped\sclam\sshell|large\smoonsnail\sshell|lavender\snassshell
+      |leopard\scowrie\sshell|lynx\scowrie\sshell|marlin\sspike\sshell
+      |multi-colored\ssnail\sshell|opaque\sspiral\sshell|pearl\snautilus\sshell|pink\sclam\sshell
+      |pink-banded\scoquinshell|polished\sbatwing\schiton\sshell|polished\sblack\stegulshell
+      |purple-cap\scowrie\sshell|ruby-lined\snassshell|seurchin\sshell|silvery\sclam\sshell
+      |snake-head\scowrie\sshell|snow\scowrie\sshell|Solhaven\sBay\sscallop\sshell
+      |sparkling\ssilvery\sconch\sshell|speckled\sconch\sshell|spiny\ssiren's-comb\sshell
+      |spiral\sturret\sshell|split-back\spink\sconch\sshell|striated\sabalone\sshell
+      |sundial\sshell|three-lined\snassshell|tiger\scowrie\sshell|tiger-striped\snautilus\sshell
+      |translucent\sgolden\sspiral\sshell|yellow-banded\scoquinshell|white\sgryphon's\swing\sshell
+      |white\sclam\sshell|scarlet\ssmoldereye|violet\ssmoldereye|fiery\sviridisoulstone
+      |black\ssphene|brown\ssphene|white\ssphene|yellow\ssphene|tiny\sblack\sand\sblue\sspherine
+      |tiny\sgreen\sand\sgrey\sspherine|tiny\sred\sand\sblue\sspherine
+      |tiny\swhite\sand\sblack\sspherine|transparent\sspherine|blue\sspinel|pink\sspinel
+      |red\sspinel|violet\sspinel|fossilized\sbessho\slizard\sspur|blue\sstarstone
+      |green\sstarstone|red\sstarstone|white\sstarstone|banded\ssardonyx\sstone
+      |blue-green\schrysocollstone|brilliant\sred\sfirebird\sstone|chunk\sof\spale\sblue\sice\sstone
+      |chunk\sof\spearly\sgrey\sice\sstone|chunk\sof\ssnowy\swhite\sice\sstone|dark\sblue\stempest\sstone
+      |ebon-cored\svortex\sstone|faint\sgold\stempest\sstone|green\salexandrite\sstone
+      |green\saventurine\sstone|green\smalachite\sstone|iridescent\slabradorite\sstone
+      |light\spink\smorganite\sstone|pale\sgrey\stempest\sstone|pink\srhodochrosite\sstone
+      |polished\sjet\sstone|silver-cored\svortex\sstone|turquoise\sstone|red\ssunstone
+      |white\ssunstone|yellow\ssunstone|jet-banded\samber\ssunstone|uncut\ssunstone
+      |deep\sblue\ssapphire\stalon|fiery\sred\sruby\stalon|glistening\sonyx\stalon
+      |sparkling\semerald\stalon|variegated\sviolet\stanzanite|piece\sof\spetrified\sthanot
+      |deep\sblue\sthunderstone|radiant\sopalescent\sthunderstone|smoky\sgrey\sthunderstone
+      |swirling\spurple\sthunderstone|polished\sshark\stooth|petrified\stoadstool|blue\stopaz
+      |clear\stopaz|golden\stopaz|green\serrisitopaz|orange\simperial\stopaz|Phoen's\seye\stopaz
+      |pink\stopaz|smoky\stopaz|black\stourmaline|blue\stourmaline|clear\stourmaline|green\stourmaline
+      |pink\stourmaline|spiderweb\sturquoise|petrified\smammoth\stusk|argent\svultite-bloom
+      |nacreous\sblue\swaterweb|dark-spoked\scrystalline\swheel|small\scrystal-spoked\swheel
+      |crystal\sof\sshadowy\swraithaline|crystal\sof\ssilvery\swraithaline|multi-colored\swyrdshard
+      |brown\szircon|clear\szircon|green\szircon|snowflake\szircon|yellow\szircon)(?=$)
+    /x
+  end
+
+  def set_ingredients
+    @ingredients = /
+      (:?acantha\sleaf|almandine\sgarnet|aloeas\sstem|ambrominas\sleaf|ayana\sleaf|ayanad\scrystal
+      |basal\smoss\s|black\sjasper|black\ssphene|black\stourmaline|blood\sred\sgarnet|bloodwood\stwig
+      |blue\slapis\slazuli|blue\spoppy|blue\ssapphire|blue\strafel\smushroom|blue\stourmaline
+      |boar\stusk\sfrom\sgreat\sboars|bolmara\slichen\s|bright\sbluerock|bright\schrysoberyl\sgem
+      |brostheras\sgrass|brown\sjade|brown\ssphene|bur-clover\sroot\s|cactacae\sspine\s|calamia\sfruit
+      |cat's\seye\smoonstone|centaur\shide\sfrom\scentaurs|citrine\squartz|clear\stopaz|clear\szircon
+      |cloudy\scrystal|coarse\sglittering\searth|coarse\sivory\sdust|cockatrice\splume\sfrom\s
+      |concentrated\sfirethorn\sessence|corked\scrystalline\sglobe\sfilled\swith\sglowing\smineral\swater
+      |cracked\ssoulstone|crimson\sdragonstalk|crushed\sskeletal\sgiant\sbone\sfrom\sskeletal\sgiants
+      |crystal\score|crystal\score\sessence|crystalline\ssolution|cuctucae\sberry\s
+      |cyclops\seye\sfrom\sa\scyclops|dark\sglittering\spowder|dark\sshadow-shrouded\scrystal|deep\sblue\seostone
+      |ebony\stwig|elemental\score|ephlox\smoss\s|essence\sof\sair|essence\sof\searth|essence\sof\sfire
+      |essence\sof\sregeneration|essence\sof\svitality|essence\sof\swater|faintly\sglimmering\sdust
+      |faintly\sglowing\sdust|faintly\sglowing\sworm\sskin|faintly\sradiant\sdust|faintly\sshimmering\sdust
+      |fairy\sprimrose|fiery\sjacinth|fire\scat\sclaw\sfrom\sfire\scats|genkew\smushroom
+      |ghoul\sfinger\sfrom\sghoul\smasters|ghoul\snail\sfrom\slesser\sghouls|giant\sglowing\stoadstool
+      |giant\sskin\sfrom\sstorm\sgiants|glimmering\sblue\sessence\sdust|glimmering\sblue\sessence\sshard
+      |glimmering\sblue\smote\sof\sessence|glistening\sblack\seye\sfrom\sdark\sshamblers
+      |glossy\sblack\sdoomstone|glowing\sviolet\sessence\sdust|glowing\sviolet\sessence\sshard
+      |glowing\sviolet\smote\sof\sessence|glowing\sfirefly|glowing\smote\sof\sessence
+      |goat\shoof\sfrom\smountain\sgoats|gold\sdust|golden\samber|golden\saster|golden\sberyl\sgem
+      |golden\smoonstone|golden\stopaz|golem\sbone\sfrom\sbone\sgolems|green\sgarnet|green\ssapphire
+      |green\sstarstone|green\stourmaline|haphip\sroot\s|heath\saster|inky\snecrotic\score
+      |iridescent\spiece\sof\smother-of-pearl|iron\sdust|jagged\scrimson\scrystal|jagged\stranslucent\scrystal
+      |luckbloom\sblossom|lump\sof\sgrey\sambergris|marallis\sberry|mottled\sfaeroth\screst|myklian\sscale
+      |n'ayanad\scrystal|nightbloom\sblossom|oak\stwig|orange\sspessartine\sgarnet|orc\sknuckle
+      |pale\sblue\sruned\scrystal\sshard|pale\stranslucent\sdust|pepperthorn\sroot|pink\srhodochrosite\sstone
+      |pink\stopaz|plains\slion\sskin\sfrom\splains\slions|polished\spink\scoral|pothinir\sgrass|powder\ssolution
+      |powdered\sgrey\spearl|powdered\srock\scrystal|powdered\sturqoise\sstone|powdered\swhite\sopal
+      |powdered\swhite\spearl|powdered\swraith\stalon\sfrom\swraiths|pristine\snymph's\shair
+      |pristine\ssiren's\shair|pure\soil|quartz\ssand|radiant\scrimson\sessence\sdust
+      |radiant\scrimson\sessence\sshard|radiant\scrimson\smote\sof\sessence|rainbow\squartz
+      |red\strafel\smushroom|rose\squartz|rose-marrow\spotion\sroot\s|runed\scrimson\scrystal
+      |s'ayanad\scrystal|scraggly\sorc\sscalp\sfrom\s|sea\ssalt|shelfae\screst\sfrom\s
+      |shimmering\sprismatic\sshard|shimmertine\sshard|silver\smane|silvery\shoof|silvery\stail
+      |skeletal\sgiant\sbone\sfrom\s|skeleton\sbone\sfrom\sskeletons|slender\stwig|slender\swhite\sbone
+      |small\sdaisy|small\senruned\sbone|small\stroll\stooth|smoky\sglimaerstone|smoky\stopaz|smooth\sstone
+      |snake-head\scowrie\sshell|soft\sblue\sgriffin\sfeather|soft\swhite\smushroom|sovyn\sclove\s
+      |sparkling\ssilvery\sconch\sshell|spotted\sleopard\spelt|sprig\sof\sfoxglove|sprig\sof\sholly
+      |sprig\sof\slarkspur|sprig\sof\slavender|star\sruby|star\ssapphire|stargazer\slily|sunburst\sblossom
+      |sweetfern\sstalk\s|t'ayanad\scrystal|talneo\sroot\s|tiny\sgolden\sseed|tkaro\sroot\s|torban\sleaf
+      |tree\sviper\sfang\sfrom\stree\svipers|trinket\soil|troll\sskin\sfrom\scave\strolls|twisted\stwig
+      |turqoise\sstone|ursian\stusk|valerian\sroot|vial\sof\saelotoi\stears|vial\sof\ssea\swater
+      |violet\ssapphire|violet\sIthzir\sbezoar|viper\sfang\sfrom\sblack\sforest\svipers|wand\soil
+      |warcat\swhisker\sfrom\sstriped\swarcats|wavepetal\sblossom|wheat\sgrass|white\shook\smushroom
+      |wight\sskin\sfrom\sarch\swights|wingstem\sroot\s|wolifrew\slichen\s|woth\sflower|yabathilium\sfruit
+      |yellow\ssapphire|yellowed\sboar\stusk\sfrom\smassive\sblack\sboars|yew\stwig)(?=$)
+    /x
+  end
+end
 
 #------------------------------------------------------------------------------
 #  Classes
 #------------------------------------------------------------------------------
 
 class Param_parser
+  include Jarrables
   VALID_COMMANDS     = ["add","remove","help","full-jars","sort-fulls","combine-pearls"]
 
   attr_reader :state
@@ -59,12 +279,22 @@ class Param_parser
           case result[0]
 
             when "add"
+            set_ingredients
+            set_jarable_gems
 
             result[1] = result[1].sub(/\s+$/, "")
 
-              if !CharSettings['whitelist'].include? result[1]
+              gem_exists        = /#{@jarable_gems}/ =~ result[1]
+              ingredient_exists = /#{@ingredients}/ =~ result[1]
+
+              if (!CharSettings['whitelist'].include? result[1]) && (gem_exists || ingredient_exists)
                 echo "Adding #{result[1]} to whitelist."
                 CharSettings['whitelist'] << result[1]
+
+              elsif CharSettings['whitelist'].include? result[1]
+                echo "Item: #{result[1]} already in whitelist."
+              else
+                echo "Item: #{result[1]} is not a valid whitelist item."
               end
 
             when "remove"
@@ -97,8 +327,9 @@ class Param_parser
             when "help"
 
               help_found = true
+              end
 
-          end
+
         else
           echo "Invalid command: #{result[0]}"
       end
@@ -122,15 +353,16 @@ class Param_parser
     @help_menu << "Usage:                                                      "
     @help_menu << " Supports multiple arguments not in any order               "
     @help_menu << " Uses whitelist to begin storing items in jars              "
-    @help_menu << "  \;#{@sn} add=<[gem | reagent]name>                        "
-    @help_menu << "  \;#{@sn} remove=<[gem | reagent]name>                     "
-    @help_menu << "  \;#{@sn} sort_fulls=true|false                            "
-    @help_menu << "  \;#{@sn} combine-pearls=true|false                        "
+    @help_menu << "                                                            "
+    @help_menu << "  \;#{@sn} add=<gem|ingredient>                             "
+    @help_menu << "  \;#{@sn} remove=<gem|ingredient>                          "
+    @help_menu << "  \;#{@sn} sort_fulls=<true|false>                          "
+    @help_menu << "  \;#{@sn} combine-pearls=<true|false>                      "
     @help_menu << "  \;#{@sn} full-jars=container                              "
     @help_menu << "  \;#{@sn} help                                             "
     @help_menu << "                                                            "
     @help_menu << "Vars:                                                       "
-    @help_menu << "  Whitelist       : #{CharSettings['whitelist']}            "
+    @help_menu << "  Whitelist       : #{CharSettings['whitelist'].sort}       "
     @help_menu << "  Full jar bag    : #{CharSettings['full_jars']}            "
     @help_menu << "  Combine pearls? : #{CharSettings['combine_pearls']}       "
     @help_menu << "                                                            "
@@ -203,21 +435,26 @@ class JarHoarder
 
     if Spell[1012].active?
       put "stop 1012"
+      echo "Stopping sonic weapon." if $debug == true
     end
 
     if Spell[1009].active?
       put "stop 1009"
+      echo "Stopping sonic weapon." if $debug == true
     end
 
     #----------------------------------------------------------------------------
     # check for physical items
 
     if GameObj.right_hand.id
+      echo "Putting away #{GameObj.right_hand}" if $debug == true
       @in_hand_hash.store(:right_hand, GameObj.right_hand.id)
       empty_right_hand
+
     end
 
     if GameObj.left_hand.id
+      echo "Putting away #{GameObj.left_hand}" if $debug == true
       @in_hand_hash.store(:left_hand, GameObj.left_hand.id)
       empty_left_hand
     end
@@ -361,17 +598,18 @@ class JarHoarder
       break if line.include?(end_inv)
     end # loop close
 
+    #--------------------------------------------------------------------------
     # if flag set combine differentiating sizes in one jar
+
     if CharSettings['combine_pearls']
 
-      chomp_pattern = /^(large\s|medium\s|small\s)\w+\spearl/
+      chomp_pattern = /^(large\s|medium\s|small\s|tiny\s)\w+\spearl/
 
       inventory_hashes.each {|hash|
 
         if chomp_pattern  =~ hash[:name]
-          hash[:name] = hash[:name].sub(/^(large\s|medium\s|small\s)/,"")
-          echo hash
-
+          hash[:name] = hash[:name].sub(/^(large\s|medium\s|small\s|tiny\s)/,"")
+          echo "Item in bags cut into: #{hash[:name]}." if $debug == true
         end
 
       }
@@ -381,17 +619,21 @@ class JarHoarder
       whitelist.each{|item|
 
         if chomp_pattern =~ item
-          whitelist[count] = item.sub(/^(large\s|medium\s|small\s)/,"")
+          echo "Found #{item} that needs to be cut..." if $debug == true
+          whitelist[count] = item.sub(/^(large\s|medium\s|small\s|tiny\s)/,"")
+          echo "Item in whitelist cut into: #{whitelist[count]}." if $debug == true
         end
 
         count += 1
       }
 
+      # cut the large, medium, m
+
       inventory_jars.each {|hash|
 
         if chomp_pattern  =~ hash[:contains]
           hash[:contains] = hash[:contains].sub(/^(large\s|medium\s|small\s|tiny\s)/,"")
-          echo hash
+          echo "Found #{hash} that needs to be cut..."
 
         end
       }
@@ -402,9 +644,11 @@ class JarHoarder
 
       if whitelist.include? hash[:name]
         if @wants_stored.key?(hash[:name])
+          echo "Adding #{hash} to #{hash[:name]} hash" if $debug == true
           @wants_stored[hash[:name]] << hash
         else
           @wants_stored[hash[:name]] = []
+          echo "No hash, making it: #{hash[:name]}" if $debug == true
           @wants_stored[hash[:name]] << hash
         end
       end
@@ -416,18 +660,22 @@ class JarHoarder
 
         if jar[:contains] == nil
           if @jars["empty"]               # if previous empties, add the next
+            echo "Creating empty jar hash. Contains: #{jar[:contains]}" if $debug == true
             @jars["empty"] << jar
           else                            # no empty hash, make it
             @jars["empty"] = []
+            echo "Add empty to \"empty\" hash. Contains: #{jar[:contains]}" if $debug == true
             @jars["empty"] << jar
           end
 
         else # non empty jars
 
           if @jars[jar[:contains]]        # if key of jar, add another jar
+            echo "Add jar to hash (#{@jars[jar[:contains]]}). Contains: #{jar[:contains]}" if $debug == true
             @jars[jar[:contains]] << jar
           else                            # no key, make it
             @jars[jar[:contains]] = []
+            echo "Add a new jar hash: #{jar[:contains]}" if $debug == true
             @jars[jar[:contains]] << jar
           end
         end
@@ -443,11 +691,13 @@ class JarHoarder
       :got_it       => /^You\sremove\s(?:a|an)\s(?<contents>[a-zA-Z\-\s]+)\scontaining/,
       :full_hands   => /(?<hands_full>^You need a free hand)/,
       :missing      => /(?<missing>^I could not find what you referring to.)/,
-      :empty        => /^You\sremove\s(?:a|an)\s(?<empty>[a-zA-Z\-\s]+)\sfrom in your/
+      :empty        => /^You\sremove\s(?:a|an)\s(?<empty>[a-zA-Z\-\s]+)\sfrom in your/,
+      :reach        => /^You\sreach\sinside\s(?<got_it>.*)/
     }
 
     get_item = {
-      :got_it       => /^You\sremove\s(?:a|an)\s(?<item>[a-zA-Z\-\'\s]+)from/
+      :got_it       => /^You\sremove\s(?:a|an)\s(?<item>[a-zA-Z\-\'\s]+)from/,
+
     }
 
     stow_item = {
@@ -460,7 +710,8 @@ class JarHoarder
       :filling      => /^You\sadd\s(?:a|an)\s(?<filling>[a-zA-Z\-\'\s]+)to\sthe\scontents\sof\s[a-zA-Z\-\s]+\./,
       :empty        => /^You\sput\syour\s(?<filling>[a-zA-Z\s\'\-]+)\sinto\syour/,
       :not_held     => /^(?<not_held>You are not holding the jar.)/,
-      :recharge     => /^(?<rechargable>[a-zA-Z\'\-\s]+)\sdoes\snot\s[a-z\s]+suitable/
+      :recharge     => /^(?<rechargable>[a-zA-Z\'\-\s]+)\sdoes\snot\s[a-z\s]+suitable/,
+      :bad_mix      => /^The\s(?<wrong_type>[a-zA-Z\'\-\s]+already\scontains[a-zA-Z\'\-\s]+)\,/
     }
 
     #--------------------------------------------------------------------------
@@ -487,7 +738,7 @@ class JarHoarder
 
       while items_to_process
 
-        echo "Item: #{item_name} count: #{item_count}" if $debug == true
+        echo "Curent item(s) to process: #{item_name} count: #{item_count}" if $debug == true
 
         #----------------------------------------------------------------------
         #  Search for a matching...move to empty jars if none found
@@ -498,23 +749,21 @@ class JarHoarder
           echo "item name: #{item_name} jar name: #{jar_name}" if $debug = true
 
           if /ruby/ =~ item_name
-            echo "FEKING HELL FOUND A PLURAL BABY"
-
+            pre_item = item_name
             item_name = item_name.sub(/ruby/, "rubies")
-            echo item_name
+            echo "Need to make plural to match jar: change #{pre_item} to #{item_name}" if $debug == true
           end
 
           if /tooth/ =~ item_name
-            echo "FEKING HELL FOUND A PLURAL BABY"
-
+            pre_item = item_name
             item_name = item_name.sub(/tooth/, "teeth")
-            echo item_name
+            echo "Need to make plural to match jar: change #{pre_item} to #{item_name}" if $debug == true
           end
 
           if /^#{item_name}/ =~ jar_name
 
               partial_jars_to_process = jar_list
-              echo "Partials to process #{partial_jars_to_process}"
+              echo "Found a partial jars for #{item_name} partial list: #{partial_jars_to_process}" if $debug == true
               break
           end
 
@@ -543,6 +792,7 @@ class JarHoarder
               end
 
               echo "CURRENT JAR LIST: #{jar_list}" if $debug == true
+
               store_result = run_command("put ##{current_item[:id]} in ##{jar[:id]}", fill_jar)
 
               if store_result.keys == [:filling]
@@ -557,6 +807,7 @@ class JarHoarder
 
               if store_result.keys == [:filled]
                 item_in_hand = false
+                echo "Jar filled up, go get another..." if $debug == true
                 run_command("stow ##{jar[:id]}", stow_item)
                 jar_in_hand = false
                 jar_list.delete(jar)
@@ -568,6 +819,9 @@ class JarHoarder
 
               if store_result.keys == [:full]
                 item_in_hand = true
+
+                echo "Jar was full, go get another..." if $debug == true
+
                 run_command("stow ##{jar[:id]}", stow_item)
                 jar_in_hand = false
                 jar_list.delete(jar)
@@ -576,10 +830,20 @@ class JarHoarder
               end
 
               if store_result.keys == [:rechargable]
+                echo "Possibly a rechargeable gem: #{current_item}, stowing..." if $debug == true
                 run_command("stow ##{current_item[:id]}", stow_item)
                 item_list.delete(current_item)
                 item_in_hand = false
                 jar_in_hand = true
+                break
+              end
+
+              if store_result.keys == [:wrong_type]
+                echo "Trying to combine wrong type: #{current_item}" if $debug == true
+                run_command("stow ##{current_item[:id]}", stow_item)
+                item_list.delete(current_item)
+                item_in_hand = false
+                jar_in_hand  = true
                 break
               end
 
@@ -679,7 +943,7 @@ class JarHoarder
                 # the jar is filled up, move to the next
                 if store_result.keys == [:filled]
                   item_in_hand = false
-
+                  echo "Jar filled up, go get another..." if $debug == true
                   run_command("stow ##{jar[:id]}", stow_item)
 
                   jar_in_hand = false
@@ -692,7 +956,7 @@ class JarHoarder
                 if store_result.keys == [:full]
                   item_in_hand = true
                   item_list.delete(current_item)
-
+                  echo "Jar was full, go get another..." if $debug == true
                   run_command("stow ##{jar[:id]}", stow_item)
 
                   jar_in_hand = false
@@ -701,11 +965,21 @@ class JarHoarder
                 end
 
                 if store_result.keys == [:rechargable]
+                  echo "Possibly a rechargeable gem: #{current_item}, stowing..." if $debug == true
                   run_command("stow ##{current_item[:id]}", stow_item)
                   item_in_hand = false
                   item_list.delete(current_item)
                   jar_in_hand = true
                   next
+                end
+
+                if store_result.keys == [:wrong_type]
+                  echo "Trying to combine wrong type: #{current_item}" if $debug == true
+                  run_command("stow ##{current_item[:id]}", stow_item)
+                  item_list.delete(current_item)
+                  item_in_hand = false
+                  jar_in_hand  = true
+                  break
                 end
 
                 #--------------------------------------------------------------
@@ -755,12 +1029,33 @@ class JarHoarder
 
 end
 
+#------------------------------------------------------------------------------
+# Runtime
+#------------------------------------------------------------------------------
+
+#------------------------------------------------------------------------------
+#  Create the parameter parser object and sanatize the inputs
+
 params      = Param_parser.new(script.vars, script.name)
+
+#------------------------------------------------------------------------------
+#  If in "run" mode, start the jar stashing process
 
 if params.state == "run"
 
+  # instantiate the jar handler object
   jar_handler = JarHoarder.new(whitelist, script.name)
+
+  # clear hands if stuff in them
+  jar_handler.clear_hands
+
+  # determine if there's something that needs to be stored
   jar_handler.set_wants_stored(whitelist)
 
+  # if something needs to be stored, process it
   jar_handler.process_wants
 end
+
+#------------------------------------------------------------------------------
+# End Runtime
+#------------------------------------------------------------------------------
