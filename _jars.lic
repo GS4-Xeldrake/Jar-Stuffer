@@ -23,6 +23,8 @@
 # TODO add buying option for empties
 # TODO get the downstream hook working for 'inv full'
 # TODO implement "list" parameter
+# TODO buy empties
+# TODO sort types
 
 #------------------------------------------------------------------------------
 # Globals
@@ -35,8 +37,9 @@ $debug = true
 #------------------------------------------------------------------------------
 
 CharSettings['whitelist']      = []     if CharSettings['whitelist'].nil?
-CharSettings['combine_pearls'] = false  if CharSetting['combine_pearls'].nil?
-CharSettings['full_jars']      = nil    if CharSetting['full_jars'].nil?
+CharSettings['combine_pearls'] = false  if CharSettings['combine_pearls'].nil?
+CharSettings['full_jar_bag']   = false  if CharSettings['full_jar_bag'].nil?
+CharSettings['buy_empties']    = false  if CharSettings['buy_empties'].nil?
 
 whitelist = CharSettings['whitelist'].dup
 
@@ -48,7 +51,7 @@ module Jarrables
 
   def set_jarable_gems
     @jarable_gems = /
-      (:?swirling\saetherstone|banded\sagate|blue\slace\sagate|chameleon\sagate
+      (:?swirling\saetherstone|Kezmonian\shoney\sberyl|banded\sagate|blue\slace\sagate|chameleon\sagate
       |cloud\sagate|fire\sagate|frost\sagate|moss\sagate|mottled\sagate|tigereye\sagate
       |droplet\sof\shoney\samber|piece\sof\sgolden\samber|teardrop\sof\sgreen\samber
       |polished\sdark\sblue\samber|deep\spurple\samethyst|shadow\samethyst
@@ -227,6 +230,7 @@ module Jarrables
       |yellow\ssapphire|yellowed\sboar\stusk\sfrom\smassive\sblack\sboars|yew\stwig)(?=$)
     /x
   end
+
 end
 
 #------------------------------------------------------------------------------
@@ -235,7 +239,10 @@ end
 
 class Param_parser
   include Jarrables
-  VALID_COMMANDS     = ["add","remove","help","full-jars","sort-fulls","combine-pearls"]
+  VALID_COMMANDS     = [
+    "add","remove","help","full-jar-bag","sort-fulls","combine-pearls",
+    "buy-empties"
+  ]
 
   attr_reader :state
 
@@ -304,15 +311,15 @@ class Param_parser
                 CharSettings['whitelist'].delete(result[1])
               end
 
-            when "full-jars"
+            when "full-jar-bag"
 
               matched_bag = GameObj.inv.find{|container| %/#{result[1]}/ === "#{container.noun}"}
 
               if matched_bag
                 echo "Setting your default full jar container to /#{result[1]}/"
-                CharSettings['full_jars'] = result[1]
+                CharSettings['full_jar_bag'] = result[1]
               else
-                echo "You must match the container NOUN, you put: #{result[1]}"
+                echo "You must match the container NOUN, you entered: #{result[1]}"
               end
 
             when "combine-pearls"
@@ -320,6 +327,15 @@ class Param_parser
               if /(true|false)/ =~ result[1]
                 CharSettings['combine_pearls'] = result[1]
                 echo "Combining pearls, set to: #{result[1]}"
+              else
+                echo "INVALID PARAMETER: You must use either 'true' or 'false'."
+              end
+
+            when "buy-empties"
+
+              if /(true|false)/ =~ result[1]
+                CharSettings['buy_empties'] = result[1]
+                echo "Enabling buy empties mode."
               else
                 echo "INVALID PARAMETER: You must use either 'true' or 'false'."
               end
@@ -354,17 +370,23 @@ class Param_parser
     @help_menu << " Supports multiple arguments not in any order               "
     @help_menu << " Uses whitelist to begin storing items in jars              "
     @help_menu << "                                                            "
+    @help_menu << " Adding and removing items to store                         "
     @help_menu << "  \;#{@sn} add=<gem|ingredient>                             "
     @help_menu << "  \;#{@sn} remove=<gem|ingredient>                          "
-    @help_menu << "  \;#{@sn} sort_fulls=<true|false>                          "
+    @help_menu << "                                                            "
+    @help_menu << " Sorting features:                                          "
+    @help_menu << "  \;#{@sn} sort-fulls=<true|false>                          "
     @help_menu << "  \;#{@sn} combine-pearls=<true|false>                      "
-    @help_menu << "  \;#{@sn} full-jars=container                              "
+    @help_menu << "  \;#{@sn} full-jar-bag=<container>                         "
+    @help_menu << "                                                            "
+    @help_menu << " Information commands:                                      "
     @help_menu << "  \;#{@sn} help                                             "
     @help_menu << "                                                            "
     @help_menu << "Vars:                                                       "
-    @help_menu << "  Whitelist       : #{CharSettings['whitelist'].sort}       "
-    @help_menu << "  Full jar bag    : #{CharSettings['full_jars']}            "
-    @help_menu << "  Combine pearls? : #{CharSettings['combine_pearls']}       "
+    @help_menu << "  whitelist      = : #{CharSettings['whitelist'].sort}      "
+    @help_menu << "                                                            "
+    @help_menu << "  full-jar-bag   = : #{CharSettings['full_jar_bag']}        "
+    @help_menu << "  combine-pearls = : #{CharSettings['combine_pearls']}      "
     @help_menu << "                                                            "
     @help_menu.each do |item|
       respond "#{item}"
@@ -702,6 +724,7 @@ class JarHoarder
 
     stow_item = {
       :stowed       => /^You\sput\s(?:a|an)\s(?<stowed>[a-zA-Z\-\s\']+)in your/,
+      :wont_fit     => /^Your\s(?<wont_fit>.*won't\sfit)\sin/
     }
 
     fill_jar = {
@@ -808,7 +831,24 @@ class JarHoarder
               if store_result.keys == [:filled]
                 item_in_hand = false
                 echo "Jar filled up, go get another..." if $debug == true
-                run_command("stow ##{jar[:id]}", stow_item)
+
+                if !CharSettings['full_jar_bag']
+                  result = run_command("stow ##{jar[:id]}", stow_item)
+
+                  if result.keys == [:wont_fit]
+                    echo "Your default container is full. Clear your bags, or change container."
+                    exit
+                  end
+
+                else
+                  result = run_command("put ##{jar[:id]} in my #{CharSettings['full_jar_bag']}", stow_item)
+
+                  if result.keys == [:wont_fit]
+                    echo "Your #{CharSettings['full_jar_bag']} is full. Clear your bags, or change container."
+                    exit
+                  end
+                end
+
                 jar_in_hand = false
                 jar_list.delete(jar)
                 item_list.delete(current_item)
@@ -822,7 +862,24 @@ class JarHoarder
 
                 echo "Jar was full, go get another..." if $debug == true
 
-                run_command("stow ##{jar[:id]}", stow_item)
+                if !CharSettings['full_jar_bag']
+                  result = run_command("stow ##{jar[:id]}", stow_item)
+
+                  if result.keys == [:wont_fit]
+                    echo "Your default container is full. Clear your bags, or change container."
+                    exit
+                  end
+
+                else
+                  result = run_command("put ##{jar[:id]} in my #{CharSettings['full_jar_bag']}", stow_item)
+
+                  if result.keys == [:wont_fit]
+                    echo "Your #{CharSettings['full_jar_bag']} is full. Clear your bags, or change container."
+                    exit
+                  end
+
+                end
+
                 jar_in_hand = false
                 jar_list.delete(jar)
                 echo "Jars left: #{jar_list}" if $debug == true
@@ -944,7 +1001,24 @@ class JarHoarder
                 if store_result.keys == [:filled]
                   item_in_hand = false
                   echo "Jar filled up, go get another..." if $debug == true
-                  run_command("stow ##{jar[:id]}", stow_item)
+
+                  if !CharSettings['full_jar_bag']
+                    result = run_command("stow ##{jar[:id]}", stow_item)
+
+                    if result.keys == [:wont_fit]
+                      echo "Your default container is full. Clear your bags, or change container."
+                      exit
+                    end
+
+                  else
+                    result = run_command("put ##{jar[:id]} in my #{CharSettings['full_jar_bag']}", stow_item)
+
+                    if result.keys == [:wont_fit]
+                      echo "Your #{CharSettings['full_jar_bag']} is full. Clear your bags, or change container."
+                      exit
+                    end
+
+                  end
 
                   jar_in_hand = false
                   jar_list.delete(jar)
@@ -957,7 +1031,24 @@ class JarHoarder
                   item_in_hand = true
                   item_list.delete(current_item)
                   echo "Jar was full, go get another..." if $debug == true
-                  run_command("stow ##{jar[:id]}", stow_item)
+
+                  if !CharSettings['full_jar_bag']
+                    result = run_command("stow ##{jar[:id]}", stow_item)
+
+                    if result.keys == [:wont_fit]
+                      echo "Your default container is full. Clear your bags, or change container."
+                      exit
+                    end
+
+                  else
+                    result = run_command("put ##{jar[:id]} in my #{CharSettings['full_jar_bag']}", stow_item)
+
+                    if result.keys == [:wont_fit]
+                      echo "Your #{CharSettings['full_jar_bag']} is full. Clear your bags, or change container."
+                      exit
+                    end
+
+                  end
 
                   jar_in_hand = false
                   jar_list.delete(jar)
