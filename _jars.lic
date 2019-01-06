@@ -8,6 +8,7 @@
 # FEATURES         : Uses partial jars prior to filling empties
 #                  : Combine varying pearl sizing in one jar
 #                  : Stashing full jars in desired containers
+#                  : An inventory component to track all jars with gems
 #
 # REVISION HISTORY :
 #
@@ -40,11 +41,77 @@ CharSettings['whitelist']      = []     if CharSettings['whitelist'].nil?
 CharSettings['combine_pearls'] = false  if CharSettings['combine_pearls'].nil?
 CharSettings['full_jar_bag']   = false  if CharSettings['full_jar_bag'].nil?
 CharSettings['buy_empties']    = false  if CharSettings['buy_empties'].nil?
+CharSettings['type_ahead']     = 1      if CharSettings['type_ahead'].nil?
+CharSettings['premium']        = nil    if CharSettings['premium'].nil?
 
 whitelist = CharSettings['whitelist'].dup
 
 #------------------------------------------------------------------------------
 #  Modules
+#------------------------------------------------------------------------------
+
+module DownstreamHooks
+
+  def self.auto_stop(stop_match, command, hook_name, output_lines = true, capture_hashes = {})
+    # Will output all but captures_hashes when output_lines = true
+    # OR globally squelch all output lines and can always return captures from hashes
+    # will stop hook when the regex value matches the line you want to
+    # stop on. Ensure that you know the underlying XML pattern to match or the
+    # hook will remain active
+
+    job_complete = false   # once this is true, exit the hook
+    captures     = []      # return value if captures
+
+    DownstreamHook.add(hook_name, Proc.new do |line|
+
+      # keep hook going until stop match
+      if line =~ stop_match
+        DownstreamHook.remove(hook_name)
+        job_complete = true
+      end
+
+      hash_match = false
+
+      # there were pattern, check each value to possibly squelch
+      capture_hashes.each_pair do |key, value|
+
+        # if there's a match, break out and set match to true
+        if line =~ value
+          result = value.match(line)
+          captures << result
+          hash_match = true
+          nil
+          break
+        end
+
+      end # end each pair
+
+      next if hash_match == true
+
+      next line if output_lines == true
+
+    end # end proc parameter
+    )
+
+    # silence commands
+    silence_me
+
+    # run a command and hook
+    fput command
+
+    # wait for a stop line pattern
+    wait_until{job_complete}
+
+    # un-silence
+    silence_me
+
+    # return the pattern that was used as the stop match
+    return captures
+
+  end # end method
+
+end
+
 #------------------------------------------------------------------------------
 
 module Jarrables
@@ -181,7 +248,7 @@ module Jarrables
 
   def set_ingredients
     @ingredients = /
-      (:?acantha\sleaf|almandine\sgarnet|aloeas\sstem|ambrominas\sleaf|ayana\sleaf|ayanad\scrystal
+      (:?acantha\sleaf|lump\sof\sblack\sambergris|almandine\sgarnet|aloeas\sstem|ambrominas\sleaf|ayana\sleaf|ayanad\scrystal
       |basal\smoss\s|black\sjasper|black\ssphene|black\stourmaline|blood\sred\sgarnet|bloodwood\stwig
       |blue\slapis\slazuli|blue\spoppy|blue\ssapphire|blue\strafel\smushroom|blue\stourmaline
       |boar\stusk\sfrom\sgreat\sboars|bolmara\slichen\s|bright\sbluerock|bright\schrysoberyl\sgem
@@ -239,10 +306,11 @@ end
 
 class Param_parser
   include Jarrables
-  VALID_COMMANDS     = [
-    "add","remove","help","full-jar-bag","sort-fulls","combine-pearls",
-    "buy-empties"
-  ]
+
+  VALID_COMMANDS = %w(
+    add remove help list inv
+    full-jar-bag sort-fulls
+    combine-pearls buy-empties type-ahead)
 
   attr_reader :state
 
@@ -261,11 +329,12 @@ class Param_parser
     pat_param = /(?<param>([a-zA-Z-])+(?=\=)  # all word chars with hyphen
                                               # followed by an '='
                                               # e.g., num-add=, or something=
-                 |(?<=^|\s)(help)(?=\s|$))=?  # or match the word 'help'
+                 |(?<=^|\s)
+                 (help|list|inv)(?=\s|$))=?       # or match the word 'help', etc
     /x
 
     pat_value = /(?<value>([a-zA-Z0-9\'\-]+   # grab all word or number chars
-                 (\s(?!help                   # ignore help as a value OR
+                 (\s(?!help|list|inv          # ignore help, etc as a value OR
                  |([a-zA-Z-]+\=               # ignore params as values OR
                  |$)))?)+)?                   # ignore last character spaces
     /x
@@ -285,6 +354,7 @@ class Param_parser
 
           case result[0]
 
+            #------------------------------------------------------------------
             when "add"
             set_ingredients
             set_jarable_gems
@@ -304,6 +374,7 @@ class Param_parser
                 echo "Item: #{result[1]} is not a valid whitelist item."
               end
 
+            #------------------------------------------------------------------
             when "remove"
 
               if CharSettings['whitelist'].include? result[1]
@@ -311,6 +382,7 @@ class Param_parser
                 CharSettings['whitelist'].delete(result[1])
               end
 
+            #------------------------------------------------------------------
             when "full-jar-bag"
 
               matched_bag = GameObj.inv.find{|container| %/#{result[1]}/ === "#{container.noun}"}
@@ -322,6 +394,7 @@ class Param_parser
                 echo "You must match the container NOUN, you entered: #{result[1]}"
               end
 
+            #------------------------------------------------------------------
             when "combine-pearls"
 
               if /(true|false)/ =~ result[1]
@@ -331,6 +404,7 @@ class Param_parser
                 echo "INVALID PARAMETER: You must use either 'true' or 'false'."
               end
 
+            #------------------------------------------------------------------
             when "buy-empties"
 
               if /(true|false)/ =~ result[1]
@@ -340,10 +414,28 @@ class Param_parser
                 echo "INVALID PARAMETER: You must use either 'true' or 'false'."
               end
 
-            when "help"
-
-              help_found = true
+            #------------------------------------------------------------------
+            when "type-ahead"
+              if /(:?[1-4])/ =~ result[1]
+                CharSettings['type_ahead'] = result[1].to_i
+                echo "Setting type ahead lines to (#{result[1]})"
+              else
+                echo "Invalid setting: Valid values are [1-4]."
               end
+
+            #------------------------------------------------------------------
+            when "list"
+                get_user_vars
+
+            #------------------------------------------------------------------
+            when "help"
+              help_found = true
+
+            when "inv"
+              @state = "inv"
+
+
+          end
 
 
         else
@@ -364,34 +456,47 @@ class Param_parser
   end
 
   def get_help
-    @help_menu = []
-    @help_menu << "                                                            "
-    @help_menu << "Usage:                                                      "
-    @help_menu << " Supports multiple arguments not in any order               "
-    @help_menu << " Uses whitelist to begin storing items in jars              "
-    @help_menu << "                                                            "
-    @help_menu << " Adding and removing items to store                         "
-    @help_menu << "  \;#{@sn} add=<gem|ingredient>                             "
-    @help_menu << "  \;#{@sn} remove=<gem|ingredient>                          "
-    @help_menu << "                                                            "
-    @help_menu << " Sorting features:                                          "
-    @help_menu << "  \;#{@sn} sort-fulls=<true|false>                          "
-    @help_menu << "  \;#{@sn} combine-pearls=<true|false>                      "
-    @help_menu << "  \;#{@sn} full-jar-bag=<container>                         "
-    @help_menu << "                                                            "
-    @help_menu << " Information commands:                                      "
-    @help_menu << "  \;#{@sn} help                                             "
-    @help_menu << "                                                            "
-    @help_menu << "Vars:                                                       "
-    @help_menu << "  whitelist      = : #{CharSettings['whitelist'].sort}      "
-    @help_menu << "                                                            "
-    @help_menu << "  full-jar-bag   = : #{CharSettings['full_jar_bag']}        "
-    @help_menu << "  combine-pearls = : #{CharSettings['combine_pearls']}      "
-    @help_menu << "                                                            "
-    @help_menu.each do |item|
+    help_menu = []
+    help_menu << "                                                            "
+    help_menu << "Usage: run any of the commands below                        "
+    help_menu << "                                                            "
+    help_menu << " Adding and removing items to store                         "
+    help_menu << "  \;#{@sn} add=(gem|ingredient)           { Adds item to whitelist to be stored in jars             }"
+    help_menu << "  \;#{@sn} remove=(gem|ingredient)        { Removes item from the whitelist                         }"
+    help_menu << "                                                            "
+    help_menu << " Sorting features:                                          "
+    help_menu << "  \;#{@sn} sort-fulls=(true|false)        { Not implemented                                         }"
+    help_menu << "  \;#{@sn} combine-pearls=(true|false)    { Combine all pearl sizes in one jar, e.g., small/tiny    }"
+    help_menu << "  \;#{@sn} full-jar-bag=(container)                         "
+    help_menu << "                                                            "
+    help_menu << " Inventory features:                                        "
+    help_menu << "  \;#{@sn} inv                            { Displays jars in all containers and lockers. Provides a }"
+    help_menu << "  \ \                                     { Total of all jars in each container/locker              }"
+    help_menu << " Information commands:                                      "
+    help_menu << "  \;#{@sn} help                           { Displays this menu                                      }"
+    help_menu << "  \;#{@sn} list                           { Outputs a list of all your character variables          }"
+    help_menu << "                                                            "
+    help_menu.each do |item|
       respond "#{item}"
     end
 
+  end
+
+  def get_user_vars
+    user_vars = []
+    user_vars << "                                                            "
+    user_vars << "Character Vars:                                             "
+    user_vars << "  whitelist      = : #{CharSettings['whitelist'].sort}      "
+    user_vars << "                                                            "
+    user_vars << "  full-jar-bag   = : #{CharSettings['full_jar_bag']}        "
+    user_vars << "  combine-pearls = : #{CharSettings['combine_pearls']}      "
+    user_vars << "  type-ahead     = : #{CharSettings['type_ahead']}          "
+    user_vars << "  buy-empties    = : #{CharSettings['buy_empties']}         "
+    user_vars << "  premium        = : #{CharSettings['premium']}             "
+    user_vars << "                                                            "
+    user_vars.each do |item|
+      respond "#{item}"
+    end
   end
 
   def output_message(message, valid=nil)
@@ -410,41 +515,42 @@ end
 
 class JarHoarder
 
-  attr_reader :jars, :wants_stored
+  LOCKERS = %w(teras sol river icemule zul ta'i ta'v mist)
+  echo LOCKERS
+  attr_reader :jars, :wants_stored, :inventory
 
   def initialize(whitelist, script_name)
-    @jars         = {}
-    @whitelist    = whitelist
-    @wants_stored = {}
     @scrip_name   = script_name
-    @in_hand_hash = {}
+    @whitelist    = whitelist
 
-    #set_jar_inventory
+    @jars         = {}
+    @wants_stored = {}
+    @in_hand_hash = {}
+    @inventory    = {}
+
+    # inventory instance vars
+
+    @all_lockers  = []
+    @grand_total  = {}
+
+    set_subscription_level if CharSettings['premium'] == (nil || false)
   end
 
-  def downstream_hook(stop_match, command, hook_name)
-    # begin a downstream hook until the regex value matches the line you want to
-    # stop on. Ensure that you know the underlying XML pattern to match or the
-    # hook will remain active
+  def set_subscription_level
+    sub_hash = {
+        :a => /You are not currently a Premium subscriber/,
+        :b => /As of your last logon/
+    }
 
-    job_complete = false
-    count = 0
-    DownstreamHook.add(hook_name, Proc.new do |line|
+    stop_match = /\<prompt\stime\=/
 
-      if line =~ stop_match
+    results = DownstreamHooks.auto_stop(stop_match,"premium start", "premie_check", false, sub_hash)
 
-        DownstreamHook.remove(hook_name)
-        echo "Removing hook"
-        echo count
-        job_complete = true
-
-      end
-      count += 1
-      nil
-    end)
-
-    put command
-    wait_until{job_complete}
+    if sub_hash[:b] =~ results[0].to_s
+      CharSettings['premium'] = true
+    else
+      CharSettings['premium'] = false
+    end
 
   end
 
@@ -472,7 +578,6 @@ class JarHoarder
       echo "Putting away #{GameObj.right_hand}" if $debug == true
       @in_hand_hash.store(:right_hand, GameObj.right_hand.id)
       empty_right_hand
-
     end
 
     if GameObj.left_hand.id
@@ -480,6 +585,7 @@ class JarHoarder
       @in_hand_hash.store(:left_hand, GameObj.left_hand.id)
       empty_left_hand
     end
+
   end
 
   def named_capture_line(text_line, regex_hash)
@@ -559,66 +665,276 @@ class JarHoarder
     return @result
   end
 
-  def set_wants_stored(whitelist)
-    @jars            = {}
-    @wants_stored    = {}
+  def set_locker_inventory
 
-    inventory_hashes = []
-    inventory_jars   = []
+    # capture pattern for jars
+    locker_jar = /(?:a|an)\s
+      (?<name>[a-zA-Z\'\-\s]+(?:jar|bottle|beaker))\scontaining\s
+      (?<item>[a-zA-Z\'\-\s]+)\s\s\(
+      (?<amount>\d+)\/
+      (?<limit>\d+)\)/x
 
-    start_inv   = %/You are currently wearing and carrying/ # start of boxes
-    end_inv     = %/displayed.)/                            # end of boxes
+    # blank these lines if they occur
+    quiet = {
+        :a => /Thinking back, you recall/,
+        :b => /There are no items/
+    }
 
-    container   = /.*displayed.\).*/
+    # stops the hook in XML
+    stop_match = /\<prompt\stime\=/
 
-    format      = [
-        /\s{6}(a|an)\s<a\sexist=(?:'|")(?<id>.*?)(?:'|")\s/,
-        /noun=(?:'|")(?<noun>.*?)(?:'|")>(?<name>.*?)\<\/a\>(\scontaining\s(?<item>.*)?|)/
-    ]
+    # hook needs a name to kill it
+    hook_name  = "test_hook"
 
-    storage     = /#{format[0]}#{format[1]}/ # connect the format regex
+    @all_lockers    = [] # results of all jars in all lockers
 
-    #--------------------------------------------------------------------------
-    # Turn on xml
+    @grand_total    = {} # grand total results of all jars
 
-    Script.current.want_downstream_xml = true    # start reading raw xml
+    LOCKERS.each do |locker|
 
-    put "inv full"
+      jars_in_locker = {:id => locker, :jar_counts => [], :jar_totals => []}
+      jar_totals     = {}
 
-    #-----------------------------------------------------------------------------
-    # look at each line of xml stream and match on boxes only
+      #------------------------------------------------------------------------
+      # start the hook
 
-    while line = get                       # one line of console text
+      DownstreamHooks.auto_stop(stop_match, "locker manifest #{locker}", hook_name,false, quiet)
 
-      inv_start        = true if line.include?(start_inv)
-      wants_hash       = {}                       # reset hash each line
+      #------------------------------------------------------------------------
+      # capture all console lines for each locker, break out when at the string
+      # that signifies the end of the locker
 
-      if inv_start == true
+      while line = get
+        jar_hash       = {}
+        if  line =~ locker_jar
 
-        #-------------------------------------------------------------------------
-        # start processing lines
+          captures = locker_jar.match(line)
 
-        if line =~ storage
+          jar_hash[:name]   = captures[:name]
+          jar_hash[:item]   = captures[:item]
+          jar_hash[:amount] = captures[:amount]
+          jar_hash[:limit]  = captures[:limit]
 
-          values = (storage.match line).captures    # grab just named capures
+          jars_in_locker[:jar_counts] << jar_hash
 
-          wants_hash[:id]   = values[0]              # first value  : item id
-          wants_hash[:noun] = values[1]              # second value : noun
-          wants_hash[:name] = values[2]              # thirst value : name
+          # if the locker jar total item name doesn't exist create it and start a
+          # count. If it exists, add to the count
+          if jar_totals[jar_hash[:item]]
+            jar_totals[jar_hash[:item]] += jar_hash[:amount].to_i
+          else
+            jar_totals[jar_hash[:item]] = jar_hash[:amount].to_i
+          end
 
-          inventory_hashes.push(wants_hash)          # add this hash to the array
+          # if the grand total item name doesn't exist create it and start a
+          # count. If it exists, add to the count
+          if @grand_total[jar_hash[:item]]
+            @grand_total[jar_hash[:item]] += jar_hash[:amount].to_i
+          else
+            @grand_total[jar_hash[:item]] = jar_hash[:amount].to_i
+          end
 
-          if wants_hash[:noun] =~ /^(?:jar|bottle|beaker)$/
+        end
+
+        # end of the locker string match...add to that locker the jar list
+        if line =~ /(?:Obvious\sitems|There are no items in this locker.)/
+          jars_in_locker[:jar_totals] << jar_totals
+
+          # all locker data frame
+          @all_lockers << jars_in_locker
+          break
+        end
+
+      end
+
+    end
+
+  end
+
+  def get_locker_inventory
+    # output per locker jars lists and each locker total, finally, output a grand total
+    @all_lockers.each do |locker|
+
+      # ignore lockers that are empty, and process the next
+      next if !locker[:jar_counts].any?
+
+      respond locker[:id].capitalize + "--------------"
+
+      # output all jars and their counts
+      locker[:jar_counts].each do |jar|
+        respond "\(" + "#{jar[:amount]}".rjust(3) + "/"+ "#{jar[:limit]}m\)".rjust(5) + " #{jar[:item]}"
+      end
+
+      if locker[:jar_counts].any?
+        respond "#{locker[:id].capitalize} Totals" + "---------------"
+      end
+
+      locker[:jar_totals][0].each_pair do |key, value|
+        respond "(" + "#{value}):".rjust(5) + " #{key}"
+      end
+
+      respond ""
+
+    end
+
+    respond "GRAND TOTALS:" + "---------------"
+
+    @grand_total.each_pair do |key, value|
+      respond "(" + "#{value}):".rjust(6) + " #{key}"
+    end
+
+  end
+
+  def set_inventory
+    match_pattern     = /\s{6}(?:a|an)\s\<a\sexist\=\"
+      (?<id>\d+)\"\snoun=\"
+      (?<noun>[a-zA-Z\-\'\s]+)\"\>
+      (?<name>[a-zA-Z\-\'\s]+)\<\/a\>(?:\r\n|\scontaining\s)
+      ((?<contains>[a-zA-Z\s\-\']+)?(?:\r\n))?
+    /x
+
+    cont_pattern      = /^\s{2}(?:a|an)\s<a\sexist\=\"(?<noun>.*)/
+
+    start_match       = /^You\sare\scurrently\swearing\sand\scarrying\:/
+    stop_match        = /.*displayed.\)/
+    job_complete      = false
+    start             = false
+    inventory_jars    = []
+    non_matched_lines = []
+    containers        = []
+
+    DownstreamHook.add("inventory_count", Proc.new do |line|
+
+      # squelch the empty lines
+      if line.strip.length == 0
+        nil
+        next
+      end
+
+      if line =~ start_match
+        start = true
+      end
+
+
+      # if the xml server line matches your intended stop text, close the hook
+      if line =~ stop_match
+        DownstreamHook.remove("inventory_count")
+        job_complete = true
+        nil
+
+      else
+
+        if (line =~ cont_pattern) && (start == true)
+          containers << line
+        end
+
+        if (match_pattern =~ line) && (start == true)
+          wants_hash = {}
+
+          values = (match_pattern.match line).captures
+
+          wants_hash[:id]       = values[0]
+          wants_hash[:noun]     = values[1]
+          wants_hash[:name]     = values[2]
+          wants_hash[:contains] = values[3]
+
+
+          if wants_hash[:noun] =~ /(?:jar|bottle|beaker)$/
             wants_hash[:contains] = values[3]
             inventory_jars.push(wants_hash)
           end
 
+
+        else
+          non_matched_lines << line
         end
+
+        nil
       end
 
-      # done looking at boxes
-      break if line.include?(end_inv)
-    end # loop close
+
+    end)
+    silence_me
+
+    put "inventory full containers"
+    wait_until{job_complete}
+
+    silence_me
+
+    containers.each do |non_match|
+      echo non_match
+    end
+
+  end
+
+  def set_wants_stored(whitelist)
+    @jars             = {}
+    @wants_stored     = {}
+
+    inventory_hashes  = []
+    inventory_jars    = []
+    non_matched_lines = []
+
+    stop_match        = /.*displayed.\)/
+
+    job_complete      = false
+
+    match_pattern     = /\s{6}(?:a|an)\s\<a\sexist\=\"
+      (?<id>\d+)\"\snoun=\"
+      (?<noun>[a-zA-Z\-\'\s]+)\"\>
+      (?<name>[a-zA-Z\-\'\s]+)\<\/a\>(?:\r\n|\scontaining\s)
+      ((?<contains>[a-zA-Z\s\-\']+)?(?:\r\n))?
+    /x
+
+
+    DownstreamHook.add("normalize_inventory", Proc.new do |line|
+
+      # squelch the empty lines
+      if line.strip.length == 0
+        nil
+        next
+      end
+
+      # if the xml server line matches your intended stop text, close the hook
+      if line =~ stop_match
+        DownstreamHook.remove("normalize_inventory")
+        job_complete = true
+        nil
+
+      else
+
+        if match_pattern =~ line
+          wants_hash = {}
+
+          values = (match_pattern.match line).captures
+
+          wants_hash[:id]       = values[0]
+          wants_hash[:noun]     = values[1]
+          wants_hash[:name]     = values[2]
+
+          inventory_hashes.push(wants_hash)
+
+          if wants_hash[:noun] =~ /(?:jar|bottle|beaker)$/
+            wants_hash[:contains] = values[3]
+            inventory_jars.push(wants_hash)
+          end
+
+
+        else
+          non_matched_lines << line
+        end
+
+        nil
+      end
+
+
+    end)
+
+    silence_me
+
+    put "inventory full"
+    wait_until{job_complete}
+
+    silence_me
 
     #--------------------------------------------------------------------------
     # if flag set combine differentiating sizes in one jar
@@ -745,9 +1061,9 @@ class JarHoarder
       #------------------------------------------------------------------------
       # Items vars
 
-      item_name  = item_hash[0]
-      item_count = item_hash[1].size
-      item_list  = item_hash[1]
+      item_count              = item_hash[1].size
+      item_name               = item_hash[0]
+      item_list               = item_hash[1]
 
       partial_jars_to_process = false
       empty_jars_process      = false
@@ -907,7 +1223,13 @@ class JarHoarder
               partial_jars_to_process = false
 
               if jar_in_hand
-                run_command("stow ##{jar[:id]}", stow_item)
+                result = run_command("stow ##{jar[:id]}", stow_item)
+
+                if result.keys == [:wont_fit]
+                  echo "Your default container is full. Clear your bags, or change container."
+                  exit
+                end
+
               end
 
             end # end of for loop
@@ -948,7 +1270,6 @@ class JarHoarder
             else
               empty_jars_process = false
             end
-
 
           end # end find matching jars list
 
@@ -1078,7 +1399,13 @@ class JarHoarder
                 empty_jars_process = false
 
                 if jar_in_hand
-                  run_command("stow ##{jar[:id]}", stow_item)
+                  result = run_command("stow ##{jar[:id]}", stow_item)
+
+                  if result.keys == [:wont_fit]
+                    echo "Your default container is full. Clear your bags, or change container."
+                    exit
+                  end
+
                 end
 
               end # end of for loop
@@ -1099,7 +1426,13 @@ class JarHoarder
               end
 
               if jar_in_hand
-                run_command("stow ##{jar[:id]}", stow_item)
+                result = run_command("stow ##{jar[:id]}", stow_item)
+
+                if result.keys == [:wont_fit]
+                  echo "Your default container is full. Clear your bags, or change container."
+                  exit
+                end
+
               end
 
               if item_in_hand
@@ -1132,19 +1465,25 @@ params      = Param_parser.new(script.vars, script.name)
 #------------------------------------------------------------------------------
 #  If in "run" mode, start the jar stashing process
 
-if params.state == "run"
+case params.state
+  when "run"
+    # instantiate the jar handler object
+    jar_handler = JarHoarder.new(whitelist, script.name)
+    # clear hands if stuff in them
+    jar_handler.clear_hands
+    # determine if there's something that needs to be stored
+    jar_handler.set_wants_stored(whitelist)
+    # if something needs to be stored, process it
+    jar_handler.process_wants
 
-  # instantiate the jar handler object
-  jar_handler = JarHoarder.new(whitelist, script.name)
+  when "inv"
+    # instantiate the jar handler object
+    jar_inv = JarHoarder.new(whitelist, script.name)
 
-  # clear hands if stuff in them
-  jar_handler.clear_hands
+    jar_inv.set_locker_inventory
 
-  # determine if there's something that needs to be stored
-  jar_handler.set_wants_stored(whitelist)
+    jar_inv.get_locker_inventory
 
-  # if something needs to be stored, process it
-  jar_handler.process_wants
 end
 
 #------------------------------------------------------------------------------
